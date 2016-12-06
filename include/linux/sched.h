@@ -1121,6 +1121,11 @@ struct sched_entity {
 	/* Per-entity load-tracking */
 	struct sched_avg	avg;
 #endif
+#ifdef CONFIG_SCHED_TASK_BEHAVIOR
+	u64 io_request_tat;
+	u64 last_io_time;
+	u64 last_io_sum_exec_runtime;
+#endif /* CONFIG_SCHED_TASK_BEHAVIOR */
 };
 
 struct sched_rt_entity {
@@ -1607,6 +1612,9 @@ struct task_struct {
 #if defined(CONFIG_BCACHE) || defined(CONFIG_BCACHE_MODULE)
 	unsigned int	sequential_io;
 	unsigned int	sequential_io_avg;
+#endif
+#ifdef CONFIG_SDP
+	unsigned int sensitive;
 #endif
 };
 
