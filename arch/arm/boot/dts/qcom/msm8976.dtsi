@@ -1866,7 +1866,7 @@
 			<432000 400000000 0x55555555>, /* NOM+ , 720p120E */
 			<244800 133333333 0xffffffff>, /* SVS- , 1080p30D */
 			<244800 228570000 0x55555555>, /* SVS  , 1080p30E */
-			<216000 100000000 0xffffffff>, /* SVS- , 720p60D  */
+			<216000 133333333 0xffffffff>, /* SVS- , 720p60D  */
 			<216000 228570000 0x55555555>, /* SVS  , 720p60E  */
 			<108000 80000000 0xffffffff>,  /* SVS--, 720p30D  */
 			<108000 100000000 0x55555555>, /* SVS- , 720p30E  */
@@ -2742,6 +2742,15 @@
 		vdd-wlan-supply = <&rome_vreg>;
 		vdd-wlan-io-supply = <&pm8950_l5>;
 		qcom,wlan-ramdump-dynamic = <0x200000>;
+		qcom,cnss-enable-bus-bandwidth;
+		qcom,msm-bus,name = "msm-cnss";
+		qcom,msm-bus,num-cases = <4>;
+		qcom,msm-bus,num-paths = <1>;
+		qcom,msm-bus,vectors-KBps =
+				<79 512 0 0>,			/* No vote */
+				<79 512 6250 200000>,		/* 50 Mbps */
+				<79 512 25000 200000>,		/* 200 Mbps */
+				<79 512 2048000 4096000>;	/* MAX */
 		status = "disabled";
 	};
 

@@ -22,7 +22,7 @@
 	interrupt-parent = <&intc>;
 
 	chosen {
-		bootargs = "sched_enable_hmp=1";
+		bootargs = "sched_enable_hmp=1 sched_enable_power_aware=1";
 	};
 
 	aliases {
@@ -1820,8 +1820,8 @@
 		qcom,dcvs-min-mbperframe = <32400>; /* 3840 x 2160 */
 
 		qcom,load-freq-tbl =
-			<979200 466000000 0x55555555>, /* TURBO, UHD30E   */
 			<979200 400000000 0xffffffff>, /* NOM+ , UHD30D   */
+			<979200 466000000 0x55555555>, /* TURBO, UHD30E   */
 			<734400 360000000 0xffffffff>, /* NOM  , 1080p90D */
 			<734400 400000000 0x55555555>, /* NOM+ , 1080p90E */
 			<489600 228570000 0xffffffff>, /* SVS  , 1080p60D */
@@ -1830,7 +1830,7 @@
 			<432000 400000000 0x55555555>, /* NOM+ , 720p120E */
 			<244800 133333333 0xffffffff>, /* SVS- , 1080p30D */
 			<244800 228570000 0x55555555>, /* SVS  , 1080p30E */
-			<216000 100000000 0xffffffff>, /* SVS- , 720p60D  */
+			<216000 133333333 0xffffffff>, /* SVS- , 720p60D  */
 			<216000 228570000 0x55555555>, /* SVS  , 720p60E  */
 			<108000 80000000 0xffffffff>,  /* SVS--, 720p30D  */
 			<108000 100000000 0x55555555>, /* SVS- , 720p30E  */
@@ -2164,8 +2164,6 @@
 		qcom,proxy-clock-names = "xo";
 		qcom,active-clock-names = "iface_clk", "bus_clk", "mem_clk";
 
-		qcom,pas-id = <5>;
-		qcom,pil-mss-memsetup;
 		qcom,firmware-name = "modem";
 		qcom,pil-self-auth;
 		qcom,sysmon-id = <0>;
@@ -2799,7 +2797,7 @@
 		status = "ok";
 		qcom,mode = <1>;
 		qcom,pull = <5>;
-		qcom,vin-sel = <0>;
+		qcom,vin-sel = <2>;
 		qcom,src-sel = <2>;
 		qcom,master-en = <1>;
 		qcom,out-strength = <2>;
