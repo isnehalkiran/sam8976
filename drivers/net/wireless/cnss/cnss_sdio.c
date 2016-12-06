@@ -28,8 +28,12 @@
 #include <soc/qcom/memory_dump.h>
 #include <net/cnss.h>
 #include <linux/pm_qos.h>
+#include <linux/msm-bus.h>
+#include <linux/msm-bus-board.h>
+
 
 #define WLAN_VREG_NAME		"vdd-wlan"
+#define WLAN_VREG1P1_NAME	"vdd-wlan1p1"
 #define WLAN_VREG_DSRC_NAME	"vdd-wlan-dsrc"
 #define WLAN_VREG_IO_NAME	"vdd-wlan-io"
 #define WLAN_VREG_XTAL_NAME	"vdd-wlan-xtal"
@@ -59,6 +63,7 @@ struct cnss_sdio_regulator {
 	struct regulator *wlan_io;
 	struct regulator *wlan_xtal;
 	struct regulator *wlan_vreg;
+	struct regulator *wlan_vreg1p1;
 	struct regulator *wlan_vreg_dsrc;
 };
 
@@ -89,6 +94,9 @@ static struct cnss_sdio_data {
 	struct cnss_sdio_info cnss_sdio_info;
 	struct cnss_ssr_info ssr_info;
 	struct pm_qos_request qos_request;
+	struct msm_bus_scale_pdata *bus_scale_table;
+	uint32_t bus_client;
+	int current_bandwidth_vote;
 } *cnss_pdata;
 
 #define WLAN_RECOVERY_DELAY 1
@@ -139,9 +147,47 @@ MODULE_DEVICE_TABLE(sdio, ar6k_id_table);
 
 int cnss_request_bus_bandwidth(int bandwidth)
 {
-	return 0;
+	int ret = 0;
+	if (!cnss_pdata)
+        return -ENODEV;
+
+	if (!cnss_pdata->bus_client)
+		return -ENOSYS;
+
+		switch (bandwidth) {
+			case CNSS_BUS_WIDTH_NONE:
+			case CNSS_BUS_WIDTH_LOW:
+			case CNSS_BUS_WIDTH_MEDIUM:
+			case CNSS_BUS_WIDTH_HIGH:
+
+			ret = msm_bus_scale_client_update_request(
+                            cnss_pdata->bus_client, bandwidth);
+
+							if (!ret) {
+							cnss_pdata->current_bandwidth_vote = bandwidth;
+							}	else {
+							         pr_err("%s: could not set bus bandwidth %d, ret = %d\n",
+									 __func__, bandwidth, ret);
+							}
+							break;
+							
+			default:
+					pr_err("%s: Invalid request %d", __func__, bandwidth);
+					ret = -EINVAL;
+					}						
+					return ret;
 }
 EXPORT_SYMBOL(cnss_request_bus_bandwidth);
+
+void cnss_request_pm_qos_type(int latency_type, u32 qos_val)
+{
+	if (!cnss_pdata)
+		return;
+
+	pr_debug("%s: PM QoS value: %d\n", __func__, qos_val);
+	pm_qos_add_request(&cnss_pdata->qos_request, latency_type, qos_val);
+}
+EXPORT_SYMBOL(cnss_request_pm_qos_type);
 
 void cnss_request_pm_qos(u32 qos_val)
 {
@@ -625,9 +671,10 @@ static int cnss_sdio_wlan_inserted(
 {
 	if (!cnss_pdata)
 		return -ENODEV;
-
+	
 	cnss_pdata->cnss_sdio_info.func = func;
 	cnss_pdata->cnss_sdio_info.id = id;
+	
 	return 0;
 }
 
@@ -649,6 +696,10 @@ static int cnss_sdio_wlan_suspend(struct device *dev)
 	if (!cnss_pdata)
 		return -ENODEV;
 
+	if (cnss_pdata->bus_client)
+			msm_bus_scale_client_update_request(cnss_pdata->bus_client,
+												CNSS_BUS_WIDTH_NONE);
+		
 	wdrv = cnss_pdata->cnss_sdio_info.wdrv;
 	if (!wdrv) {
 		/* This can happen when no wlan driver loaded (no register to
@@ -673,8 +724,12 @@ static int cnss_sdio_wlan_resume(struct device *dev)
 
 	if (!cnss_pdata)
 		return -ENODEV;
-
-	wdrv = cnss_pdata->cnss_sdio_info.wdrv;
+	
+	if (cnss_pdata->bus_client)
+            msm_bus_scale_client_update_request(cnss_pdata->bus_client,
+												cnss_pdata->current_bandwidth_vote);
+		
+	wdrv = cnss_pdata->cnss_sdio_info.wdrv;	
 	if (!wdrv) {
 		/* This can happen when no wlan driver loaded (no register to
 		 * platform driver).
@@ -758,6 +813,10 @@ cnss_sdio_wlan_unregister_driver(struct cnss_sdio_wlan_driver *driver)
 	if (!cnss_pdata)
 		return;
 
+	if (cnss_pdata->bus_client)
+		msm_bus_scale_client_update_request(cnss_pdata->bus_client,
+		CNSS_BUS_WIDTH_NONE);
+		
 	cnss_info = &cnss_pdata->cnss_sdio_info;
 	if (!cnss_info->wdrv) {
 		pr_err("%s: driver not registered\n", __func__);
@@ -854,13 +913,34 @@ static int cnss_sdio_configure_wlan_enable_regulator(void)
 		if (error) {
 			dev_err(dev, "VDD-VREG enable failed error=%d\n",
 				error);
-			goto err_vdd_vreg_regulator;
+			goto err_vdd_vreg_regulator1;
 		}
 	}
 
+		if (of_get_property(
+		cnss_pdata->pdev->dev.of_node,
+		WLAN_VREG1P1_NAME "-supply", NULL)) {
+		cnss_pdata->regulator.wlan_vreg1p1 = regulator_get(
+			&cnss_pdata->pdev->dev, WLAN_VREG1P1_NAME);
+		if (IS_ERR(cnss_pdata->regulator.wlan_vreg1p1)) {
+			error = PTR_ERR(cnss_pdata->regulator.wlan_vreg1p1);
+			dev_err(dev, "VDD-VREG1P1 get failed error=%d\n", error);
+			return error;
+		}
+
+		error = regulator_enable(cnss_pdata->regulator.wlan_vreg1p1);
+		if (error) {
+			dev_err(dev, "VDD-VREG1P1 enable failed error=%d\n",
+				error);
+			goto err_vdd_vreg_regulator2;
+		}
+	}
+	
 	return 0;
 
-err_vdd_vreg_regulator:
+err_vdd_vreg_regulator2:
+	regulator_put(cnss_pdata->regulator.wlan_vreg1p1);
+err_vdd_vreg_regulator1:
 	regulator_put(cnss_pdata->regulator.wlan_vreg);
 
 	return error;
@@ -972,8 +1052,10 @@ static void cnss_sdio_release_resource(void)
 {
 	if (cnss_pdata->regulator.wlan_xtal)
 		regulator_put(cnss_pdata->regulator.wlan_xtal);
+	if (cnss_pdata->regulator.wlan_vreg1p1)
+		regulator_put(cnss_pdata->regulator.wlan_vreg1p1);
 	if (cnss_pdata->regulator.wlan_vreg)
-		regulator_put(cnss_pdata->regulator.wlan_xtal);
+		regulator_put(cnss_pdata->regulator.wlan_vreg);
 	if (cnss_pdata->regulator.wlan_io)
 		regulator_put(cnss_pdata->regulator.wlan_io);
 	if (cnss_pdata->regulator.wlan_vreg_dsrc)
@@ -1046,9 +1128,25 @@ static int cnss_sdio_probe(struct platform_device *pdev)
 			error);
 		goto err_subsys_init;
 	}
+	
+	cnss_pdata->bus_scale_table = 0;
+	cnss_pdata->bus_scale_table = msm_bus_cl_get_pdata(pdev);
+	
+	if (cnss_pdata->bus_scale_table){
+	cnss_pdata->bus_client =
+		msm_bus_scale_register_client(cnss_pdata->bus_scale_table);
 
-	dev_info(&pdev->dev, "CNSS SDIO Driver registered");
+		if (!cnss_pdata->bus_client) {
+		dev_err(&pdev->dev, "Failed to register with bus_scale client\n");
+		goto err_bus_reg;
+		}
+		}
+		
+		dev_err(&pdev->dev, "CNSS SDIO Driver registered");
+
 	return 0;
+err_bus_reg:
+	cnss_subsys_exit();	
 err_subsys_init:
 	cnss_ramdump_cleanup();
 err_ramdump_create:
@@ -1059,6 +1157,7 @@ err_wlan_enable_regulator:
 	regulator_put(cnss_pdata->regulator.wlan_xtal);
 	regulator_put(cnss_pdata->regulator.wlan_io);
 	cnss_pdata = NULL;
+	printk( "%s: CNSS SDIO Driver probe fail\n", __func__);
 	return error;
 }
 
@@ -1068,6 +1167,10 @@ static int cnss_sdio_remove(struct platform_device *pdev)
 
 	if (!cnss_pdata)
 		return -ENODEV;
+	
+	if (cnss_pdata->bus_client)
+		msm_bus_scale_client_update_request(cnss_pdata->bus_client,
+		CNSS_BUS_WIDTH_NONE);
 
 	cnss_sdio_wlan_exit();
 

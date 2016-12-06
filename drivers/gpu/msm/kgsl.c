@@ -29,6 +29,7 @@
 #include <linux/sort.h>
 #include <linux/security.h>
 #include <linux/compat.h>
+#include <linux/show_mem_notifier.h>
 
 #include "kgsl.h"
 #include "kgsl_debugfs.h"
@@ -1081,28 +1082,25 @@ static void device_release_contexts(struct kgsl_device_private *dev_priv)
 	struct kgsl_device *device = dev_priv->device;
 	struct kgsl_context *context;
 	int next = 0;
-	int result = 0;
 
 	while (1) {
 		read_lock(&device->context_lock);
 		context = idr_get_next(&device->context_idr, &next);
+		read_unlock(&device->context_lock);
 
-		if (context == NULL) {
-			read_unlock(&device->context_lock);
+		if (context == NULL)
 			break;
-		} else if (context->dev_priv == dev_priv) {
+
+		if (context->dev_priv == dev_priv) {
 			/*
 			 * Hold a reference to the context in case somebody
 			 * tries to put it while we are detaching
 			 */
-			result = _kgsl_context_get(context);
-		}
-		read_unlock(&device->context_lock);
 
-		if (result) {
-			kgsl_context_detach(context);
-			kgsl_context_put(context);
-			result = 0;
+			if (_kgsl_context_get(context)) {
+				kgsl_context_detach(context);
+				kgsl_context_put(context);
+			}
 		}
 
 		next = next + 1;
@@ -2038,6 +2036,20 @@ static inline int _check_region(unsigned long start, unsigned long size,
 	return (end > len);
 }
 
+static int check_vma_flags(struct vm_area_struct *vma,
+		unsigned int flags)
+{
+	unsigned long flags_requested = (VM_READ | VM_WRITE);
+
+	if (flags & KGSL_MEMFLAGS_GPUREADONLY)
+		flags_requested &= ~VM_WRITE;
+
+	if ((vma->vm_flags & flags_requested) == flags_requested)
+		return 0;
+
+	return -EFAULT;
+}
+
 static int check_vma(struct vm_area_struct *vma, struct file *vmfile,
 		struct kgsl_memdesc *memdesc)
 {
@@ -2051,7 +2063,7 @@ static int check_vma(struct vm_area_struct *vma, struct file *vmfile,
 	if (vma->vm_start != memdesc->useraddr ||
 		(memdesc->useraddr + memdesc->size) != vma->vm_end)
 		return -EINVAL;
-	return 0;
+	return check_vma_flags(vma, memdesc->flags);
 }
 
 static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, struct file *vmfile)
@@ -2060,7 +2072,7 @@ static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, struct file *vmfile)
 	long npages = 0, i;
 	size_t sglen = (size_t) (memdesc->size / PAGE_SIZE);
 	struct page **pages = NULL;
-	int write = (memdesc->flags & KGSL_MEMFLAGS_GPUREADONLY) != 0;
+	int write = ((memdesc->flags & KGSL_MEMFLAGS_GPUREADONLY) ? 0 : 1);
 
 	if (sglen == 0 || sglen >= LONG_MAX)
 		return -EINVAL;
@@ -2179,6 +2191,12 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 
 	if (vma && vma->vm_file) {
 		int fd;
+
+		ret = check_vma_flags(vma, entry->memdesc.flags);
+		if (ret) {
+			up_read(&current->mm->mmap_sem);
+			return ret;
+		}
 
 		/*
 		 * Check to see that this isn't our own memory that we have
@@ -4212,6 +4230,27 @@ void kgsl_device_platform_remove(struct kgsl_device *device)
 }
 EXPORT_SYMBOL(kgsl_device_platform_remove);
 
+static int kgsl_sharedmem_size_notifier(struct notifier_block *nb,
+					unsigned long is_simple, void *data)
+{
+	struct seq_file *s;
+
+	s = (struct seq_file *)data;
+	if (!is_simple)
+		return 0;
+	if (s != NULL)
+		seq_printf(s, "KgslSharedmem:  %8lu kB\n",
+			(unsigned long)(kgsl_driver.stats.page_alloc >> 10));
+	else
+		printk("KgslSharedmem:%lukB ",
+			(unsigned long)(kgsl_driver.stats.page_alloc >> 10));
+	return 0;
+}
+
+static struct notifier_block kgsl_sharedmem_size_nb = {
+	.notifier_call = kgsl_sharedmem_size_notifier,
+};
+
 static void kgsl_core_exit(void)
 {
 	kgsl_events_exit();
@@ -4238,6 +4277,7 @@ static void kgsl_core_exit(void)
 
 	kgsl_memfree_exit();
 	unregister_chrdev_region(kgsl_driver.major, KGSL_DEVICE_MAX);
+	show_mem_notifier_unregister(&kgsl_sharedmem_size_nb);
 }
 
 static int __init kgsl_core_init(void)
@@ -4311,6 +4351,8 @@ static int __init kgsl_core_init(void)
 		goto err;
 
 	kgsl_memfree_init();
+
+	show_mem_notifier_register(&kgsl_sharedmem_size_nb);
 
 	return 0;
 

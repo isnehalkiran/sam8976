@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1366,7 +1366,6 @@ int ipa_q6_monitor_holb_mitigation(bool enable)
 	int ep_idx;
 	int client_idx;
 
-	ipa_inc_client_enable_clks();
 	for (client_idx = 0; client_idx < IPA_CLIENT_MAX; client_idx++) {
 		if (IPA_CLIENT_IS_Q6_NON_ZIP_CONS(client_idx)) {
 			ep_idx = ipa_get_ep_mapping(client_idx);
@@ -1378,7 +1377,6 @@ int ipa_q6_monitor_holb_mitigation(bool enable)
 			ipa_uc_monitor_holb(client_idx, enable);
 		}
 	}
-	ipa_dec_client_disable_clks();
 
 	return 0;
 }
@@ -1739,10 +1737,7 @@ int ipa_q6_pre_shutdown_cleanup(void)
 		IPAERR("Failed to disable aggregation on Q6 pipes\n");
 		BUG();
 	}
-
-	/* set proxy vote before decrement */
-	ipa_proxy_clk_vote();
-	ipa_dec_client_disable_clks();
+	ipa_ctx->q6_proxy_clk_vote_valid = true;
 	return 0;
 }
 
@@ -2784,8 +2779,10 @@ void ipa_inc_client_enable_clks(void)
 {
 	ipa_active_clients_lock();
 	ipa_ctx->ipa_active_clients.cnt++;
-	if (ipa_ctx->ipa_active_clients.cnt == 1)
+	if (ipa_ctx->ipa_active_clients.cnt == 1) {
+		pm_stay_awake(ipa_ctx->pdev);
 		ipa_enable_clks();
+	}
 	IPADBG("active clients = %d\n", ipa_ctx->ipa_active_clients.cnt);
 	ipa_active_clients_unlock();
 }
@@ -2845,6 +2842,7 @@ void ipa_dec_client_disable_clks(void)
 			ipa_ctx->ipa_active_clients.cnt = 1;
 			queue_work(ipa_ctx->power_mgmt_wq, &ipa_tag_work);
 		} else {
+			pm_relax(ipa_ctx->pdev);
 			ipa_disable_clks();
 		}
 	}
@@ -3623,6 +3621,9 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 	/* Create a wakeup source. */
 	wakeup_source_init(&ipa_ctx->w_lock, "IPA_WS");
 	spin_lock_init(&ipa_ctx->wakelock_ref_cnt.spinlock);
+
+	/* Create a wakeup source. */
+	ipa_ctx->pdev->power.wakeup = wakeup_source_register("IPA_WS2");
 
 	/* Initialize the SPS PM lock. */
 	mutex_init(&ipa_ctx->sps_pm.sps_pm_lock);

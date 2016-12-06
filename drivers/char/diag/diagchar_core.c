@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -390,6 +390,12 @@ static void diag_close_logging_process(int pid)
 				 "setting mdlog proc %d to NULL, proc: %d",
 				 driver->md_proc[i].pid, i);
 		}
+		if (logging_proc->uart_process) {
+			logging_proc->uart_process = NULL;
+			DIAG_LOG(DIAG_DEBUG_USERSPACE,
+				"setting uart proc %d to NULL, proc: %d",
+				driver->md_proc[i].pid, i);
+		}
 		diag_update_proc_vote(DIAG_PROC_MEMORY_DEVICE, VOTE_DOWN, i);
 	}
 	mutex_unlock(&driver->diagchar_mutex);
@@ -452,6 +458,11 @@ static int diag_remove_client_entry(struct file *file)
 	if (!driver)
 		return -ENOMEM;
 
+	if(driver->silent_log_pid) {
+		put_pid(driver->silent_log_pid);
+		driver->silent_log_pid = NULL;
+	}
+
 	mutex_lock(&driver->diag_file_mutex);
 	if (!file) {
 		DIAG_LOG(DIAG_DEBUG_USERSPACE, "Invalid file pointer\n");
@@ -470,11 +481,9 @@ static int diag_remove_client_entry(struct file *file)
 	* This will specially help in case of ungraceful exit of any DCI client
 	* This call will remove any pending registrations of such client
 	*/
-	mutex_lock(&driver->dci_mutex);
 	dci_entry = dci_lookup_client_entry_pid(current->tgid);
 	if (dci_entry)
 		diag_dci_deinit_client(dci_entry);
-	mutex_unlock(&driver->dci_mutex);
 
 	diag_close_logging_process(current->tgid);
 
@@ -1262,6 +1271,13 @@ static int diag_switch_logging(const int requested_mode)
 				 driver->md_proc[i].pid, i);
 			}
 			break;
+		case UART_MODE:
+			driver->md_proc[i].pid = current->tgid;
+			driver->md_proc[i].uart_process = current;
+			DIAG_LOG(DIAG_DEBUG_USERSPACE,
+				"setting uart process to %d, proc: %d",
+				driver->md_proc[i].pid, i);
+			break;
 		}
 	}
 fail:
@@ -1670,57 +1686,37 @@ long diagchar_compat_ioctl(struct file *filp,
 		result = diag_ioctl_dci_reg(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_DEINIT:
-		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int))) {
-			mutex_unlock(&driver->dci_mutex);
+			sizeof(int)))
 			return -EFAULT;
-		}
 		dci_client = diag_dci_get_client_entry(client_id);
-		if (!dci_client) {
-			mutex_unlock(&driver->dci_mutex);
+		if (!dci_client)
 			return DIAG_DCI_NOT_SUPPORTED;
-		}
 		result = diag_dci_deinit_client(dci_client);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_SUPPORT:
 		result = diag_ioctl_dci_support(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_HEALTH_STATS:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_health_stats(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_LOG_STATUS:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_log_status(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_EVENT_STATUS:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_event_status(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_LOGS:
-		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int))) {
-			mutex_unlock(&driver->dci_mutex);
+			sizeof(int)))
 			return -EFAULT;
-		}
 		result = diag_dci_clear_log_mask(client_id);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_EVENTS:
-		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user(&client_id, (void __user *)ioarg,
-			sizeof(int))) {
-			mutex_unlock(&driver->dci_mutex);
+			sizeof(int)))
 			return -EFAULT;
-		}
 		result = diag_dci_clear_event_mask(client_id);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_LSM_DEINIT:
 		result = diag_ioctl_lsm_deinit();
@@ -1729,6 +1725,10 @@ long diagchar_compat_ioctl(struct file *filp,
 		if (copy_from_user((void *)&req_logging_mode,
 					(void __user *)ioarg, sizeof(int)))
 			return -EFAULT;
+		/*
+		 * Get a pid of diag_mdlog(app) and save it.
+		 */
+		driver->silent_log_pid = get_pid(task_pid(current));
 		result = diag_switch_logging(req_logging_mode);
 		break;
 	case DIAG_IOCTL_REMOTE_DEV:
@@ -1740,9 +1740,7 @@ long diagchar_compat_ioctl(struct file *filp,
 			result = 1;
 		break;
 	case DIAG_IOCTL_VOTE_REAL_TIME:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_vote_real_time(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_GET_REAL_TIME:
 		result = diag_ioctl_get_real_time(ioarg);
@@ -1790,55 +1788,37 @@ long diagchar_ioctl(struct file *filp,
 		result = diag_ioctl_dci_reg(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_DEINIT:
-		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int))) {
-			mutex_unlock(&driver->dci_mutex);
+			sizeof(int)))
 			return -EFAULT;
-		}
 		dci_client = diag_dci_get_client_entry(client_id);
-		if (!dci_client) {
-			mutex_unlock(&driver->dci_mutex);
+		if (!dci_client)
 			return DIAG_DCI_NOT_SUPPORTED;
-		}
 		result = diag_dci_deinit_client(dci_client);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_SUPPORT:
 		result = diag_ioctl_dci_support(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_HEALTH_STATS:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_health_stats(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_LOG_STATUS:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_log_status(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_EVENT_STATUS:
 		result = diag_ioctl_dci_event_status(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_LOGS:
-		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int))) {
-			mutex_unlock(&driver->dci_mutex);
+			sizeof(int)))
 			return -EFAULT;
-		}
 		result = diag_dci_clear_log_mask(client_id);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_EVENTS:
-		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user(&client_id, (void __user *)ioarg,
-			sizeof(int))) {
-			mutex_unlock(&driver->dci_mutex);
+			sizeof(int)))
 			return -EFAULT;
-		}
 		result = diag_dci_clear_event_mask(client_id);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_LSM_DEINIT:
 		result = diag_ioctl_lsm_deinit();
@@ -1847,6 +1827,10 @@ long diagchar_ioctl(struct file *filp,
 		if (copy_from_user((void *)&req_logging_mode,
 					(void __user *)ioarg, sizeof(int)))
 			return -EFAULT;
+		/*
+		 * Get a pid of diag_mdlog(app) and save it.
+		 */
+		driver->silent_log_pid = get_pid(task_pid(current));
 		result = diag_switch_logging(req_logging_mode);
 		break;
 	case DIAG_IOCTL_REMOTE_DEV:
@@ -1858,9 +1842,7 @@ long diagchar_ioctl(struct file *filp,
 			result = 1;
 		break;
 	case DIAG_IOCTL_VOTE_REAL_TIME:
-		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_vote_real_time(ioarg);
-		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_GET_REAL_TIME:
 		result = diag_ioctl_get_real_time(ioarg);
@@ -2381,6 +2363,25 @@ static int diag_user_process_apps_data(const char __user *buf, int len,
 
 	return 0;
 }
+/*
+ * silent_log_panic_handler()
+ * If the silent log is enabled for CP and CP is in
+ * trouble, diag_mdlog (APP) should be terminated before
+ * a panic occurs, since it can flush logs to SD card
+ * when it is over. So, please use this function to termimate it.
+ */
+int silent_log_panic_handler(void)
+{
+	int ret = 0;
+	if(driver->silent_log_pid) {
+		pr_info("%s: killing slient log...\n", __func__);
+		kill_pid(driver->silent_log_pid, SIGTERM, 1);
+		driver->silent_log_pid = NULL;
+		ret = 1;
+	}
+	return ret;
+}
+EXPORT_SYMBOL(silent_log_panic_handler);
 
 static ssize_t diagchar_read(struct file *file, char __user *buf, size_t count,
 			  loff_t *ppos)
@@ -2977,6 +2978,7 @@ static int __init diagchar_init(void)
 		driver->md_proc[i].callback_process = NULL;
 		driver->md_proc[i].socket_process = NULL;
 		driver->md_proc[i].mdlog_process = NULL;
+		driver->md_proc[i].uart_process = NULL;
 	}
 	driver->mask_check = 0;
 	driver->in_busy_pktdata = 0;

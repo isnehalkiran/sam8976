@@ -2785,8 +2785,11 @@ static void fg_cap_learning_work(struct work_struct *work)
 		goto fail;
 	}
 
-	if (chip->wa_flag & USE_CC_SOC_REG)
-		goto fail;
+	if (chip->wa_flag & USE_CC_SOC_REG) {
+		mutex_unlock(&chip->learning_data.learning_lock);
+		fg_relax(&chip->capacity_learning_wakeup_source);
+		return;
+	}
 
 	fg_mem_lock(chip);
 
@@ -2817,8 +2820,6 @@ static void fg_cap_learning_work(struct work_struct *work)
 		pr_info("total_cc_uah = %lld\n", chip->learning_data.cc_uah);
 
 fail:
-	if (chip->wa_flag & USE_CC_SOC_REG)
-		fg_relax(&chip->capacity_learning_wakeup_source);
 	mutex_unlock(&chip->learning_data.learning_lock);
 	return;
 

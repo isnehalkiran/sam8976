@@ -52,6 +52,10 @@
 #include <linux/compat_qseecom.h>
 #endif
 
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/qcom/sec_debug.h>
+#endif
+
 #define QSEECOM_DEV			"qseecom"
 #define QSEOS_VERSION_14		0x14
 #define QSEEE_VERSION_00		0x400000
@@ -7013,6 +7017,10 @@ static int qseecom_probe(struct platform_device *pdev)
 					cmd_len = sizeof(struct
 					qsee_apps_region_info_64bit_ireq);
 				}
+#ifdef CONFIG_SEC_DEBUG_SUBSYS
+				sec_debug_secure_app_addr_size(req.addr, req.size);
+#endif
+
 				pr_warn("secure app region addr=0x%x size=0x%x",
 							req.addr, req.size);
 			} else {
