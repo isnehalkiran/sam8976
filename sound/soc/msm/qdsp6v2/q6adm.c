@@ -760,7 +760,7 @@ int adm_set_stereo_to_custom_stereo(int port_id, int copp_idx,
 	adm_params->hdr.dest_svc = APR_SVC_ADM;
 	adm_params->hdr.dest_domain = APR_DOMAIN_ADSP;
 	adm_params->hdr.dest_port = 0; /* Ignored */;
-	adm_params->hdr.token = port_idx << 16 | copp_idx;
+	adm_params->hdr.token = 0;
 	adm_params->hdr.opcode = ADM_CMD_SET_PSPD_MTMX_STRTR_PARAMS_V5;
 	adm_params->payload_addr_lsw = 0;
 	adm_params->payload_addr_msw = 0;
@@ -2300,8 +2300,25 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 
 	if ((topology == VPM_TX_SM_ECNS_COPP_TOPOLOGY) ||
 	    (topology == VPM_TX_DM_FLUENCE_COPP_TOPOLOGY) ||
-	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY))
+	    (topology == VPM_TX_DM_RFECNS_COPP_TOPOLOGY)
+#ifdef CONFIG_SEC_VOC_SOLUTION
+	    || (topology == VPM_TX_SM_LVVEFQ_COPP_TOPOLOGY)
+	    || (topology == VPM_TX_DM_LVVEFQ_COPP_TOPOLOGY)
+	    || (topology == VPM_TX_SM_LVSAFQ_COPP_TOPOLOGY)
+	    || (topology == VOICE_TX_DIAMONDVOICE_FVSAM_DM)
+	    || (topology == VOICE_TX_DIAMONDVOICE_FVSAM_QM)
+#endif /* CONFIG_SEC_VOC_SOLUTION */
+	    )
 		rate = 16000;
+
+#ifdef CONFIG_SND_SOC_MSM8X16_RT5659
+	/* 
+	 * because ADSP cannot support 24bit recording,
+	 * fix to I2S tx bitwidth to 16bit
+	 */
+	if(port_id == AFE_PORT_ID_QUINARY_MI2S_TX)
+		bit_width = 16;
+#endif /* CONFIG_SND_SOC_MSM8X16_RT5659 */
 
 	copp_idx = adm_get_idx_if_copp_exists(port_idx, topology, perf_mode,
 						rate, bit_width, app_type);
@@ -4110,6 +4127,88 @@ done:
 
 	return ret;
 }
+
+#ifdef CONFIG_SEC_SND_SOLUTION
+int adm_set_sound_booster(int port_id, int copp_idx, long *param)
+{
+	struct adm_set_pp_sb_param sb_params;
+	int ret = 0;
+	int port_idx;
+
+	pr_info("%s port_id: 0x%x, copp_idx %d\n",
+		 __func__, port_id, copp_idx);
+	port_id = afe_convert_virtual_to_portid(port_id);
+	port_idx = adm_validate_and_get_port_index(port_id);
+	if (port_idx < 0 || port_idx >= AFE_MAX_PORTS) {
+		pr_err("%s: Invalid port_id %#x copp_idx %d\n",
+			__func__, port_id, copp_idx);
+		ret = -EINVAL;
+		goto end;
+	}
+
+	sb_params.command.hdr.hdr_field =
+			APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+			APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	sb_params.command.hdr.pkt_size =
+			sizeof(struct adm_set_pp_sb_param);
+	sb_params.command.hdr.src_svc = APR_SVC_ADM;
+	sb_params.command.hdr.src_domain = APR_DOMAIN_APPS;
+	sb_params.command.hdr.src_port = port_id;
+	sb_params.command.hdr.dest_svc = APR_SVC_ADM;
+	sb_params.command.hdr.dest_domain = APR_DOMAIN_ADSP;
+	sb_params.command.hdr.dest_port =
+			atomic_read(&this_adm.copp.id[port_idx][copp_idx]);
+	sb_params.command.hdr.token = port_idx << 16 | copp_idx;
+	sb_params.command.hdr.opcode = ADM_CMD_SET_PP_PARAMS_V5;
+	sb_params.command.payload_addr_lsw = 0;
+	sb_params.command.payload_addr_msw = 0;
+	sb_params.command.mem_map_handle = 0;
+	sb_params.command.payload_size = sizeof(sb_params) -
+						sizeof(sb_params.command);
+	sb_params.params.module_id = AUDPROC_MODULE_ID_PP_SB;
+	sb_params.params.param_id = AUDPROC_PARAM_ID_PP_SB_PARAM;
+	sb_params.params.param_size = sb_params.command.payload_size -
+					sizeof(sb_params.params);
+	sb_params.params.reserved = 0;
+	sb_params.sb_enable = param[0];
+
+	pr_info("%s: sound booster : %d\n",
+		 __func__, sb_params.sb_enable);
+	atomic_set(&this_adm.copp.stat[port_idx][copp_idx], 0);
+	atomic_set(&this_adm.copp.cmd_err_code[port_idx][copp_idx], 0);
+	ret = apr_send_pkt(this_adm.apr, (uint32_t *)&sb_params);
+	if (ret < 0) {
+		pr_err("%s: device mute for port %d copp %d failed, ret %d\n",
+			__func__, port_id, copp_idx, ret);
+		ret = -EINVAL;
+		goto end;
+	}
+
+	/* Wait for the callback */
+	ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
+		atomic_read(&this_adm.copp.stat[port_idx][copp_idx]),
+		msecs_to_jiffies(TIMEOUT_MS));
+	if (!ret) {
+		pr_err("%s: send sb_enable for port %d copp %d failed\n",
+			__func__, port_id, copp_idx);
+		ret = -EINVAL;
+		goto end;
+	} else if (atomic_read(&this_adm.copp.cmd_err_code
+				[port_idx][copp_idx]) > 0) {
+		pr_err("%s: DSP returned error[%s]\n",
+				__func__, adsp_err_get_err_str(
+				atomic_read(&this_adm.copp.cmd_err_code
+				[port_idx][copp_idx])));
+		ret = adsp_err_get_lnx_err_code(
+				atomic_read(&this_adm.copp.cmd_err_code
+					[port_idx][copp_idx]));
+		goto end;
+	}
+	ret = 0;
+end:
+	return ret;
+}
+#endif
 
 static int __init adm_init(void)
 {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -126,9 +126,6 @@ static struct wcd_mbhc_config wcd_mbhc_cfg = {
 	.key_code[6] = 0,
 	.key_code[7] = 0,
 	.linein_th = 5000,
-	.mbhc_micbias = MIC_BIAS_2,
-	.anc_micbias = MIC_BIAS_2,
-	.enable_anc_mic_detect = false,
 };
 
 static struct wcd9xxx_mbhc_config wcd9xxx_mbhc_cfg = {
@@ -689,15 +686,7 @@ static int slim0_rx_bit_format_put(struct snd_kcontrol *kcontrol,
 static int msm_vi_feed_tx_ch_get(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-
-	if (!strcmp(dev_name(codec->dev), "tasha_codec"))
-		ucontrol->value.integer.value[0] =
-					(msm_vi_feed_tx_ch - 1);
-	else
-		ucontrol->value.integer.value[0] =
-					(msm_vi_feed_tx_ch/2 - 1);
-
+	ucontrol->value.integer.value[0] = (msm_vi_feed_tx_ch/2 - 1);
 	pr_debug("%s: msm_vi_feed_tx_ch = %ld\n", __func__,
 				ucontrol->value.integer.value[0]);
 	return 0;
@@ -706,15 +695,8 @@ static int msm_vi_feed_tx_ch_get(struct snd_kcontrol *kcontrol,
 static int msm_vi_feed_tx_ch_put(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
-
-	if (!strcmp(dev_name(codec->dev), "tasha_codec"))
-		msm_vi_feed_tx_ch =
-			ucontrol->value.integer.value[0] + 1;
-	else
-		msm_vi_feed_tx_ch =
-			roundup_pow_of_two(
-				ucontrol->value.integer.value[0] + 2);
+	msm_vi_feed_tx_ch =
+		roundup_pow_of_two(ucontrol->value.integer.value[0] + 2);
 
 	pr_debug("%s: msm_vi_feed_tx_ch = %d\n", __func__, msm_vi_feed_tx_ch);
 	return 1;
@@ -1333,11 +1315,16 @@ int msm_slim_4_tx_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	struct snd_soc_codec *codec = rtd->codec;
 
 	pr_debug("%s: codec name: %s", __func__, dev_name(codec->dev));
-	if (!strcmp(dev_name(codec->dev), "tasha_codec")) {
+	if (!strcmp(dev_name(codec->dev), "tomtom_codec")) {
+		rate->min = rate->max = SAMPLING_RATE_48KHZ;
+		channels->min = channels->max = msm_vi_feed_tx_ch;
+		pr_debug("%s: tomtom vi sample rate = %d\n",
+				__func__, rate->min);
+	} else if (!strcmp(dev_name(codec->dev), "tasha_codec")) {
 		param_set_mask(params, SNDRV_PCM_HW_PARAM_FORMAT,
 			SNDRV_PCM_FORMAT_S32_LE);
 		rate->min = rate->max = SAMPLING_RATE_8KHZ;
-		channels->min = channels->max = msm_vi_feed_tx_ch;
+		channels->min = channels->max = msm_vi_feed_tx_ch/2;
 		pr_debug("%s: tasha vi sample rate = %d\n",
 				__func__, rate->min);
 	} else {
@@ -1551,7 +1538,6 @@ static int quat_mi2s_clk_ctl(struct snd_pcm_substream *substream, bool enable)
 
 	if (enable) {
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-			mi2s_rx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_12_P288_MHZ;
 			if (mi2s_rx_bit_format == SNDRV_PCM_FORMAT_S24_LE)
 				mi2s_rx_clk.clk_val1 =
 					Q6AFE_LPASS_IBIT_CLK_3_P072_MHZ;
@@ -1563,7 +1549,6 @@ static int quat_mi2s_clk_ctl(struct snd_pcm_substream *substream, bool enable)
 					&mi2s_rx_clk);
 		} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 			mi2s_tx_clk.clk_val1 = Q6AFE_LPASS_IBIT_CLK_1_P536_MHZ;
-			mi2s_tx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_12_P288_MHZ;
 			ret = afe_set_lpass_clock(
 					AFE_PORT_ID_QUATERNARY_MI2S_TX,
 					&mi2s_tx_clk);
@@ -1577,13 +1562,11 @@ static int quat_mi2s_clk_ctl(struct snd_pcm_substream *substream, bool enable)
 	} else {
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 			mi2s_rx_clk.clk_val1 = Q6AFE_LPASS_IBIT_CLK_DISABLE;
-			mi2s_rx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_DISABLE;
 			ret = afe_set_lpass_clock(
 				AFE_PORT_ID_QUATERNARY_MI2S_RX,
 				&mi2s_rx_clk);
 		} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 			mi2s_tx_clk.clk_val1 = Q6AFE_LPASS_IBIT_CLK_DISABLE;
-			mi2s_tx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_DISABLE;
 			ret = afe_set_lpass_clock(
 				AFE_PORT_ID_QUATERNARY_MI2S_TX,
 				&mi2s_tx_clk);
@@ -1604,7 +1587,6 @@ static int quin_mi2s_sclk_ctl(struct snd_pcm_substream *substream, bool enable)
 
 	if (enable) {
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-			mi2s_rx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_12_P288_MHZ;
 			if (mi2s_rx_bit_format == SNDRV_PCM_FORMAT_S24_LE)
 				mi2s_rx_clk.clk_val1 =
 					Q6AFE_LPASS_IBIT_CLK_3_P072_MHZ;
@@ -1616,7 +1598,6 @@ static int quin_mi2s_sclk_ctl(struct snd_pcm_substream *substream, bool enable)
 					&mi2s_rx_clk);
 		} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 			mi2s_tx_clk.clk_val1 = Q6AFE_LPASS_IBIT_CLK_1_P536_MHZ;
-			mi2s_tx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_12_P288_MHZ;
 			ret = afe_set_lpass_clock(
 					AFE_PORT_ID_QUINARY_MI2S_TX,
 					&mi2s_tx_clk);
@@ -1630,13 +1611,11 @@ static int quin_mi2s_sclk_ctl(struct snd_pcm_substream *substream, bool enable)
 	} else {
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 			mi2s_rx_clk.clk_val1 = Q6AFE_LPASS_IBIT_CLK_DISABLE;
-			mi2s_rx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_DISABLE;
 			ret = afe_set_lpass_clock(
 					AFE_PORT_ID_QUINARY_MI2S_RX,
 					&mi2s_rx_clk);
 		} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 			mi2s_tx_clk.clk_val1 = Q6AFE_LPASS_IBIT_CLK_DISABLE;
-			mi2s_tx_clk.clk_val2 = Q6AFE_LPASS_OSR_CLK_DISABLE;
 			ret = afe_set_lpass_clock(
 					AFE_PORT_ID_QUINARY_MI2S_TX,
 					&mi2s_tx_clk);
@@ -1743,6 +1722,7 @@ void msm_prim_auxpcm_shutdown(struct snd_pcm_substream *substream)
 				__func__, "quat_i2s");
 }
 
+/*
 int msm_sec_auxpcm_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
@@ -1765,7 +1745,7 @@ int msm_sec_auxpcm_startup(struct snd_pcm_substream *substream)
 	}
 	atomic_inc(&pdata->clk_ref.sec_auxpcm_mi2s_clk_ref);
 
-	/* enable the gpio's used for the external AUXPCM interface */
+	// enable the gpio's used for the external AUXPCM interface 
 	ret = msm_gpioset_activate(CLIENT_WCD_EXT, "quin_i2s");
 	if (ret < 0)
 		pr_err("%s(): configure gpios failed = %s\n",
@@ -1789,6 +1769,7 @@ void msm_sec_auxpcm_shutdown(struct snd_pcm_substream *substream)
 		pr_err("%s(): configure gpios failed = %s\n",
 				__func__, "quin_i2s");
 }
+*/
 
 int msm_quat_mi2s_snd_startup(struct snd_pcm_substream *substream)
 {
